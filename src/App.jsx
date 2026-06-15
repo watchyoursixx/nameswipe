@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { db } from './firebase'
 import { ref, set, get, onValue, update, serverTimestamp } from 'firebase/database'
 import { NAME_POOL, ALPHABET } from './names'
@@ -10,18 +10,82 @@ function generateCode() {
   return words[Math.floor(Math.random() * words.length)] + Math.floor(Math.random() * 90 + 10)
 }
 
-function getNames(type, letter) {
-  return NAME_POOL[type]?.[letter] || []
+function getNames(gender, type, letter) {
+  return NAME_POOL[gender]?.[type]?.[letter] || []
 }
 
-function getMatches(swipes, slot1, slot2) {
-  const s1 = swipes?.[slot1] || {}
-  const s2 = swipes?.[slot2] || {}
-  const matches = []
-  for (const [key, val] of Object.entries(s1)) {
-    if (val === 'like' && s2[key] === 'like') matches.push(key)
-  }
-  return matches
+// ── Burst Heart Animation ──────────────────────────────────────────────────
+function HeartBurst({ active, onDone }) {
+  const [phase, setPhase] = useState('idle') // idle -> burst -> float -> done
+
+  useEffect(() => {
+    if (!active) return
+    setPhase('burst')
+    const t1 = setTimeout(() => setPhase('float'), 400)
+    const t2 = setTimeout(() => { setPhase('idle'); onDone?.() }, 1600)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [active])
+
+  if (phase === 'idle') return null
+
+  const particles = Array.from({ length: 20 }, (_, i) => {
+    const angle = (i / 20) * 360
+    const dist = 60 + Math.random() * 80
+    const size = 14 + Math.random() * 18
+    const delay = Math.random() * 0.1
+    return { id: i, angle, dist, size, delay, color: ['#f472b6','#fb7185','#e879f9','#c084fc','#f9a8d4'][i % 5] }
+  })
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, display: 'flex', alignItems: 'center',
+      justifyContent: 'center', pointerEvents: 'none', zIndex: 998,
+    }}>
+      {/* Central burst heart */}
+      <div style={{
+        fontSize: 72,
+        animation: phase === 'burst' ? 'heartPop 0.4s cubic-bezier(0.34,1.56,0.64,1) forwards' : 'heartFade 0.4s ease forwards',
+        position: 'relative', zIndex: 2,
+      }}>💜</div>
+
+      {/* Flying hearts */}
+      {particles.map(p => {
+        const rad = (p.angle * Math.PI) / 180
+        const tx = Math.cos(rad) * p.dist
+        const ty = Math.sin(rad) * p.dist
+        return (
+          <div key={p.id} style={{
+            position: 'absolute',
+            fontSize: p.size,
+            left: '50%', top: '50%',
+            transform: 'translate(-50%, -50%)',
+            animation: phase === 'float'
+              ? `flyHeart 1.2s ease-out ${p.delay}s forwards`
+              : 'none',
+            '--tx': `${tx}px`,
+            '--ty': `${ty}px`,
+            opacity: phase === 'burst' ? 0 : 1,
+          }}>💜</div>
+        )
+      })}
+
+      <style>{`
+        @keyframes heartPop {
+          0% { transform: scale(0); opacity: 0; }
+          60% { transform: scale(1.4); opacity: 1; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes heartFade {
+          from { transform: scale(1); opacity: 1; }
+          to { transform: scale(0.5); opacity: 0; }
+        }
+        @keyframes flyHeart {
+          0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+          100% { transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty) - 40px)) scale(0.3); opacity: 0; }
+        }
+      `}</style>
+    </div>
+  )
 }
 
 // ── Confetti ───────────────────────────────────────────────────────────────
@@ -34,7 +98,7 @@ function Confetti({ active }) {
     size: 7 + Math.random() * 7, circle: Math.random() > 0.5, rot: Math.random() * 360,
   }))
   return (
-    <div style={{ position:'fixed', inset:0, pointerEvents:'none', zIndex:999, overflow:'hidden' }}>
+    <div style={{ position:'fixed', inset:0, pointerEvents:'none', zIndex:997, overflow:'hidden' }}>
       {pieces.map(p => (
         <div key={p.id} style={{
           position:'absolute', left:`${p.left}%`, top:-24,
@@ -84,31 +148,49 @@ function SwipeCard({ name, lastName, onSwipe }) {
   const [drag, setDrag] = useState(0)
   const [dragging, setDragging] = useState(false)
   const startX = useRef(null)
+  const cardRef = useRef(null)
 
   function px(e) { return e.touches ? e.touches[0].clientX : e.clientX }
-  function onDown(e) { startX.current = px(e); setDragging(true) }
+
+  function onDown(e) {
+    startX.current = px(e)
+    setDragging(true)
+  }
+
   function onMove(e) {
     if (!dragging || startX.current === null) return
+    e.preventDefault() // prevents page scroll while swiping
     setDrag(px(e) - startX.current)
   }
+
   function onUp() {
     if (drag > 80) onSwipe('right')
     else if (drag < -80) onSwipe('left')
     setDrag(0); setDragging(false); startX.current = null
   }
 
+  // Attach touch events with passive:false so preventDefault works
+  useEffect(() => {
+    const el = cardRef.current
+    if (!el) return
+    const opts = { passive: false }
+    el.addEventListener('touchmove', onMove, opts)
+    return () => el.removeEventListener('touchmove', onMove, opts)
+  }, [dragging, drag])
+
   const likeOp = Math.max(0, Math.min(1, drag / 80))
   const nopeOp = Math.max(0, Math.min(1, -drag / 80))
 
   return (
     <div
+      ref={cardRef}
       onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
-      onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
+      onTouchStart={onDown} onTouchEnd={onUp}
       style={{
         userSelect:'none', cursor:dragging?'grabbing':'grab',
         transform:`translateX(${drag}px) rotate(${drag * 0.1}deg)`,
         transition:dragging?'none':'transform 0.35s cubic-bezier(0.34,1.56,0.64,1)',
-        position:'relative', width:'100%',
+        position:'relative', width:'100%', touchAction:'pan-y',
       }}
     >
       <div style={{
@@ -152,7 +234,7 @@ function MatchesPanel({ matches, lastName, onClose }) {
       <div style={{ flex:1, overflowY:'auto', padding:'16px 20px' }}>
         {matches.length === 0 ? (
           <div style={{ color:'#334155', textAlign:'center', marginTop:80, fontSize:15, lineHeight:1.7 }}>
-            No matches yet.<br />Keep swiping — they're coming!
+            No matches yet.<br />Keep swiping!
           </div>
         ) : (
           matches.map((name, i) => (
@@ -175,7 +257,7 @@ function MatchesPanel({ matches, lastName, onClose }) {
 
 // ── Room Lobby ─────────────────────────────────────────────────────────────
 function RoomLobby({ onJoin }) {
-  const [mode, setMode] = useState(null) // 'create' | 'join'
+  const [mode, setMode] = useState(null)
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
   const [lastName, setLastName] = useState('')
@@ -186,8 +268,7 @@ function RoomLobby({ onJoin }) {
     if (!name.trim()) { setError('Enter your name first'); return }
     setLoading(true); setError('')
     const roomCode = generateCode()
-    const roomRef = ref(db, `rooms/${roomCode}`)
-    await set(roomRef, {
+    await set(ref(db, `rooms/${roomCode}`), {
       created: serverTimestamp(),
       lastName: lastName.trim(),
       slots: { p1: name.trim(), p2: null },
@@ -204,8 +285,7 @@ function RoomLobby({ onJoin }) {
     if (!code.trim()) { setError('Enter the room code'); return }
     setLoading(true); setError('')
     const upper = code.trim().toUpperCase()
-    const roomRef = ref(db, `rooms/${upper}`)
-    const snap = await get(roomRef)
+    const snap = await get(ref(db, `rooms/${upper}`))
     if (!snap.exists()) { setError("Room not found — check the code"); setLoading(false); return }
     const room = snap.val()
     if (room.slots.p2) { setError("Room is full"); setLoading(false); return }
@@ -216,7 +296,7 @@ function RoomLobby({ onJoin }) {
     onJoin({ roomCode: upper, slot: 'p2', myName: name.trim() })
   }
 
-  const input = {
+  const inp = {
     width:'100%', background:'#1e293b', border:'1px solid #334155',
     borderRadius:12, padding:'13px 16px', color:'#fff', fontSize:16,
     outline:'none', fontFamily:'inherit', marginBottom:12,
@@ -252,12 +332,12 @@ function RoomLobby({ onJoin }) {
           }}>← Back</button>
 
           <div style={{ color:'#475569', fontSize:11, marginBottom:6, textTransform:'uppercase', letterSpacing:1.5 }}>Your name</div>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Bryant" style={input} />
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Bryant" style={inp} />
 
           {mode === 'create' && (
             <>
               <div style={{ color:'#475569', fontSize:11, marginBottom:6, textTransform:'uppercase', letterSpacing:1.5 }}>Baby's last name (optional)</div>
-              <input value={lastName} onChange={e => setLastName(e.target.value)} placeholder="e.g. Smith" style={input} />
+              <input value={lastName} onChange={e => setLastName(e.target.value)} placeholder="e.g. Smith" style={inp} />
             </>
           )}
 
@@ -265,21 +345,17 @@ function RoomLobby({ onJoin }) {
             <>
               <div style={{ color:'#475569', fontSize:11, marginBottom:6, textTransform:'uppercase', letterSpacing:1.5 }}>Room code</div>
               <input value={code} onChange={e => setCode(e.target.value.toUpperCase())}
-                placeholder="e.g. MAPLE42" style={{ ...input, textTransform:'uppercase', letterSpacing:2, fontWeight:700 }} />
+                placeholder="e.g. MAPLE42" style={{ ...inp, textTransform:'uppercase', letterSpacing:2, fontWeight:700 }} />
             </>
           )}
 
           {error && <div style={{ color:'#fb7185', fontSize:13, marginBottom:12 }}>{error}</div>}
 
-          <button
-            onClick={mode === 'create' ? createRoom : joinRoom}
-            disabled={loading}
-            style={{
-              width:'100%', padding:'14px', background:loading?'#334155':'#818cf8',
-              color:'#fff', border:'none', borderRadius:14, fontSize:16,
-              fontWeight:700, cursor:loading?'default':'pointer', fontFamily:'inherit',
-            }}
-          >{loading ? 'Loading…' : mode === 'create' ? 'Create room' : 'Join room'}</button>
+          <button onClick={mode === 'create' ? createRoom : joinRoom} disabled={loading} style={{
+            width:'100%', padding:'14px', background:loading?'#334155':'#818cf8',
+            color:'#fff', border:'none', borderRadius:14, fontSize:16,
+            fontWeight:700, cursor:loading?'default':'pointer', fontFamily:'inherit',
+          }}>{loading ? 'Loading…' : mode === 'create' ? 'Create room' : 'Join room'}</button>
         </div>
       )}
     </div>
@@ -289,20 +365,20 @@ function RoomLobby({ onJoin }) {
 // ── Main Swipe App ─────────────────────────────────────────────────────────
 function SwipeApp({ roomCode, slot, myName, onLeave }) {
   const [room, setRoom] = useState(null)
+  const [gender, setGender] = useState('boy')
   const [nameType, setNameType] = useState('first')
   const [letter, setLetter] = useState('M')
   const [showMatches, setShowMatches] = useState(false)
   const [matchModal, setMatchModal] = useState(null)
+  const [burst, setBurst] = useState(false)
   const [confetti, setConfetti] = useState(false)
   const [cardKey, setCardKey] = useState(0)
   const seenMatchesRef = useRef(new Set())
 
   const otherSlot = slot === 'p1' ? 'p2' : 'p1'
 
-  // Live sync
   useEffect(() => {
-    const roomRef = ref(db, `rooms/${roomCode}`)
-    return onValue(roomRef, snap => {
+    return onValue(ref(db, `rooms/${roomCode}`), snap => {
       if (snap.exists()) setRoom(snap.val())
     })
   }, [roomCode])
@@ -310,51 +386,44 @@ function SwipeApp({ roomCode, slot, myName, onLeave }) {
   // Detect new matches
   useEffect(() => {
     if (!room) return
-    const matches = getMatches(room.swipes, slot, otherSlot)
-    for (const name of matches) {
-      if (!seenMatchesRef.current.has(name)) {
-        seenMatchesRef.current.add(name)
-        // Only show modal if other person already liked it (i.e. I just caused the match)
-        const mySwipes = room.swipes?.[slot] || {}
-        if (mySwipes[`${nameType}:${letter}:${name}`] === 'like' ||
-            Object.entries(mySwipes).some(([k,v]) => k.endsWith(`:${name}`) && v === 'like')) {
+    const s1 = room.swipes?.[slot] || {}
+    const s2 = room.swipes?.[otherSlot] || {}
+    for (const [k, v] of Object.entries(s1)) {
+      if (v === 'like' && s2[k] === 'like' && !seenMatchesRef.current.has(k)) {
+        seenMatchesRef.current.add(k)
+        const name = k.split(':')[3]
+        setTimeout(() => {
           setMatchModal(name)
-          setConfetti(true)
-          setTimeout(() => setConfetti(false), 3000)
-        }
+          setBurst(true)
+          setTimeout(() => setConfetti(true), 300)
+          setTimeout(() => setConfetti(false), 2500)
+        }, 200)
       }
     }
   }, [room])
 
-  const swipeKey = `${nameType}:${letter}`
+  const swipeKey = `${gender}:${nameType}:${letter}`
   const mySwipes = room?.swipes?.[slot] || {}
-  const seenNames = new Set(Object.keys(mySwipes).filter(k => k.startsWith(swipeKey + ':')).map(k => k.split(':')[2]))
-  const allNames = getNames(nameType, letter)
+  const seenNames = new Set(
+    Object.keys(mySwipes).filter(k => k.startsWith(swipeKey + ':')).map(k => k.split(':')[3])
+  )
+  const allNames = getNames(gender, nameType, letter)
   const remaining = allNames.filter(n => !seenNames.has(n))
   const currentName = remaining[0] || null
 
+  // All matches across everything
   const allMatches = []
   if (room) {
-    for (const type of ['first','middle']) {
-      for (const l of ALPHABET) {
-        const ms = getMatches(room.swipes, slot, otherSlot)
-          .filter(n => {
-            const k1 = `${type}:${l}:${n}`
-            return room.swipes?.[slot]?.[k1] === 'like' && room.swipes?.[otherSlot]?.[k1] === 'like'
-          })
-        allMatches.push(...ms)
-      }
-    }
-    // Simpler: just collect all keys where both liked
-    allMatches.length = 0
     const s1 = room.swipes?.[slot] || {}
     const s2 = room.swipes?.[otherSlot] || {}
     for (const [k, v] of Object.entries(s1)) {
-      if (v === 'like' && s2[k] === 'like') {
-        allMatches.push(k.split(':')[2])
-      }
+      if (v === 'like' && s2[k] === 'like') allMatches.push(k.split(':')[3])
     }
   }
+
+  const myLikes = Object.entries(mySwipes)
+    .filter(([k, v]) => k.startsWith(swipeKey + ':') && v === 'like')
+    .map(([k]) => k.split(':')[3])
 
   async function swipe(dir) {
     if (!currentName) return
@@ -364,21 +433,14 @@ function SwipeApp({ roomCode, slot, myName, onLeave }) {
   }
 
   const partnerName = room?.slots?.[otherSlot]
-  const partnerOnline = !!partnerName
-  const myLikes = Object.entries(mySwipes)
-    .filter(([k,v]) => k.startsWith(swipeKey+':') && v === 'like')
-    .map(([k]) => k.split(':')[2])
-
   const seenCount = seenNames.size
   const progress = allNames.length ? seenCount / allNames.length : 0
 
-  if (!room) {
-    return (
-      <div style={{ minHeight:'100svh', background:'#0f172a', display:'flex', alignItems:'center', justifyContent:'center' }}>
-        <div style={{ color:'#475569', fontSize:16 }}>Connecting…</div>
-      </div>
-    )
-  }
+  if (!room) return (
+    <div style={{ minHeight:'100svh', background:'#0f172a', display:'flex', alignItems:'center', justifyContent:'center' }}>
+      <div style={{ color:'#475569' }}>Connecting…</div>
+    </div>
+  )
 
   return (
     <div style={{
@@ -387,55 +449,55 @@ function SwipeApp({ roomCode, slot, myName, onLeave }) {
       display:'flex', flexDirection:'column', maxWidth:430, margin:'0 auto',
     }}>
       {/* Header */}
-      <div style={{
-        padding:'16px 20px 12px',
-        display:'flex', alignItems:'center', justifyContent:'space-between',
-        borderBottom:'1px solid #1e293b',
-      }}>
+      <div style={{ padding:'16px 20px 12px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:'1px solid #1e293b' }}>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           <span style={{ fontSize:20 }}>🍼</span>
           <div>
-            <div style={{ fontWeight:800, fontSize:16, letterSpacing:-0.5 }}>Nameswipe</div>
+            <div style={{ fontWeight:800, fontSize:16 }}>Nameswipe</div>
             <div style={{ fontSize:11, color:'#334155', letterSpacing:1 }}>{roomCode}</div>
           </div>
         </div>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <div style={{
-            display:'flex', alignItems:'center', gap:5,
-            background:'#1e293b', borderRadius:50, padding:'5px 12px',
-          }}>
-            <div style={{
-              width:7, height:7, borderRadius:'50%',
-              background: partnerOnline ? '#34d399' : '#334155',
-            }} />
-            <span style={{ color: partnerOnline ? '#94a3b8' : '#334155', fontSize:12 }}>
-              {partnerOnline ? partnerName : 'Waiting for partner…'}
-            </span>
+          <div style={{ display:'flex', alignItems:'center', gap:5, background:'#1e293b', borderRadius:50, padding:'5px 12px' }}>
+            <div style={{ width:7, height:7, borderRadius:'50%', background:partnerName?'#34d399':'#334155' }} />
+            <span style={{ color:partnerName?'#94a3b8':'#334155', fontSize:12 }}>{partnerName || 'Waiting…'}</span>
           </div>
           <button onClick={() => setShowMatches(true)} style={{
-            background: allMatches.length > 0 ? '#1e1b4b' : '#111827',
-            border:`1px solid ${allMatches.length > 0 ? '#4338ca' : '#1e293b'}`,
+            background:allMatches.length>0?'#1e1b4b':'#111827',
+            border:`1px solid ${allMatches.length>0?'#4338ca':'#1e293b'}`,
             borderRadius:50, padding:'6px 13px',
-            color: allMatches.length > 0 ? '#a5b4fc' : '#334155',
+            color:allMatches.length>0?'#a5b4fc':'#334155',
             fontSize:13, cursor:'pointer', fontWeight:700,
           }}>💜 {allMatches.length}</button>
         </div>
       </div>
 
       {/* Who am I */}
-      <div style={{ padding:'10px 20px 0', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-        <div style={{ color:'#334155', fontSize:12 }}>
-          Swiping as <span style={{ color:'#818cf8', fontWeight:700 }}>{myName}</span>
-        </div>
-        <button onClick={onLeave} style={{
-          background:'none', border:'none', color:'#334155', fontSize:12, cursor:'pointer', fontFamily:'inherit',
-        }}>Leave room</button>
+      <div style={{ padding:'8px 20px 0', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+        <div style={{ color:'#334155', fontSize:12 }}>Swiping as <span style={{ color:'#818cf8', fontWeight:700 }}>{myName}</span></div>
+        <button onClick={onLeave} style={{ background:'none', border:'none', color:'#334155', fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>Leave</button>
       </div>
 
       {/* Controls */}
-      <div style={{ padding:'12px 20px 0', display:'flex', gap:10 }}>
+      <div style={{ padding:'12px 20px 0', display:'flex', gap:8 }}>
+        {/* Gender */}
         <div style={{ flex:1 }}>
-          <div style={{ color:'#334155', fontSize:10, marginBottom:5, textTransform:'uppercase', letterSpacing:1.5 }}>Name type</div>
+          <div style={{ color:'#334155', fontSize:10, marginBottom:4, textTransform:'uppercase', letterSpacing:1.5 }}>Gender</div>
+          <div style={{ display:'flex', background:'#1e293b', borderRadius:10, padding:3, gap:3 }}>
+            {[['boy','👦'],['girl','👧']].map(([g, emoji]) => (
+              <button key={g} onClick={() => setGender(g)} style={{
+                flex:1, padding:'7px 0',
+                background:gender===g?'#334155':'transparent',
+                border:'none', borderRadius:8,
+                color:gender===g?'#e2e8f0':'#475569',
+                fontSize:13, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+              }}>{emoji} {g.charAt(0).toUpperCase()+g.slice(1)}</button>
+            ))}
+          </div>
+        </div>
+        {/* Type */}
+        <div style={{ flex:1 }}>
+          <div style={{ color:'#334155', fontSize:10, marginBottom:4, textTransform:'uppercase', letterSpacing:1.5 }}>Type</div>
           <div style={{ display:'flex', background:'#1e293b', borderRadius:10, padding:3, gap:3 }}>
             {['first','middle'].map(t => (
               <button key={t} onClick={() => setNameType(t)} style={{
@@ -448,76 +510,50 @@ function SwipeApp({ roomCode, slot, myName, onLeave }) {
             ))}
           </div>
         </div>
-        <div style={{ flex:1 }}>
-          <div style={{ color:'#334155', fontSize:10, marginBottom:5, textTransform:'uppercase', letterSpacing:1.5 }}>Letter</div>
+        {/* Letter */}
+        <div>
+          <div style={{ color:'#334155', fontSize:10, marginBottom:4, textTransform:'uppercase', letterSpacing:1.5 }}>Letter</div>
           <select value={letter} onChange={e => setLetter(e.target.value)} style={{
-            width:'100%', background:'#1e293b', border:'1px solid #334155',
-            borderRadius:10, padding:'9px 10px', color:'#e2e8f0',
-            fontSize:15, fontWeight:700, cursor:'pointer', outline:'none', fontFamily:'inherit',
+            background:'#1e293b', border:'1px solid #334155',
+            borderRadius:10, padding:'9px 8px', color:'#e2e8f0',
+            fontSize:14, fontWeight:700, cursor:'pointer', outline:'none', fontFamily:'inherit',
           }}>
-            {ALPHABET.map(l => <option key={l} value={l}>{l} ({(NAME_POOL[nameType][l]||[]).length})</option>)}
+            {ALPHABET.map(l => <option key={l} value={l}>{l}</option>)}
           </select>
         </div>
       </div>
 
       {/* Progress */}
-      <div style={{ padding:'12px 20px 0' }}>
-        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5, fontSize:11, color:'#334155' }}>
-          <span>{seenCount} rated</span>
-          <span>{remaining.length} left</span>
+      <div style={{ padding:'10px 20px 0' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4, fontSize:11, color:'#334155' }}>
+          <span>{seenCount} rated</span><span>{remaining.length} left</span>
         </div>
         <div style={{ background:'#1e293b', borderRadius:4, height:3 }}>
-          <div style={{
-            background:'linear-gradient(90deg,#818cf8,#a78bfa)',
-            height:3, borderRadius:4, width:`${progress*100}%`, transition:'width 0.4s',
-          }} />
+          <div style={{ background:'linear-gradient(90deg,#818cf8,#a78bfa)', height:3, borderRadius:4, width:`${progress*100}%`, transition:'width 0.4s' }} />
         </div>
       </div>
 
       {/* Card area */}
-      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'20px 20px' }}>
+      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'20px' }}>
         {currentName ? (
           <>
             <div style={{ width:'100%', position:'relative' }}>
-              {remaining[2] && (
-                <div style={{ position:'absolute', top:8, left:'50%', transform:'translateX(-50%) scale(0.92)', width:'100%', opacity:0.22, pointerEvents:'none' }}>
-                  <div style={{ background:'#1e1b4b', borderRadius:28, minHeight:240 }} />
-                </div>
-              )}
-              {remaining[1] && (
-                <div style={{ position:'absolute', top:4, left:'50%', transform:'translateX(-50%) scale(0.963)', width:'100%', opacity:0.48, pointerEvents:'none' }}>
-                  <div style={{ background:'#1e1b4b', borderRadius:28, minHeight:240 }} />
-                </div>
-              )}
+              {remaining[2] && <div style={{ position:'absolute', top:8, left:'50%', transform:'translateX(-50%) scale(0.92)', width:'100%', opacity:0.22, pointerEvents:'none' }}><div style={{ background:'#1e1b4b', borderRadius:28, minHeight:240 }} /></div>}
+              {remaining[1] && <div style={{ position:'absolute', top:4, left:'50%', transform:'translateX(-50%) scale(0.963)', width:'100%', opacity:0.48, pointerEvents:'none' }}><div style={{ background:'#1e1b4b', borderRadius:28, minHeight:240 }} /></div>}
               <div style={{ position:'relative', zIndex:10 }}>
                 <SwipeCard key={cardKey} name={currentName} lastName={room.lastName} onSwipe={swipe} />
               </div>
             </div>
             <div style={{ display:'flex', gap:28, marginTop:28 }}>
-              <button onClick={() => swipe('left')} style={{
-                width:68, height:68, borderRadius:'50%',
-                background:'#1a0f1f', border:'2px solid #fb7185',
-                fontSize:22, cursor:'pointer', color:'#fb7185', fontWeight:700,
-                display:'flex', alignItems:'center', justifyContent:'center',
-              }}>✕</button>
-              <button onClick={() => swipe('right')} style={{
-                width:68, height:68, borderRadius:'50%',
-                background:'#0f1e1b', border:'2px solid #34d399',
-                fontSize:22, cursor:'pointer', color:'#34d399', fontWeight:700,
-                display:'flex', alignItems:'center', justifyContent:'center',
-              }}>♥</button>
+              <button onClick={() => swipe('left')} style={{ width:68, height:68, borderRadius:'50%', background:'#1a0f1f', border:'2px solid #fb7185', fontSize:22, cursor:'pointer', color:'#fb7185', fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center' }}>✕</button>
+              <button onClick={() => swipe('right')} style={{ width:68, height:68, borderRadius:'50%', background:'#0f1e1b', border:'2px solid #34d399', fontSize:22, cursor:'pointer', color:'#34d399', fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center' }}>♥</button>
             </div>
             <div style={{ marginTop:10, color:'#1e293b', fontSize:12 }}>swipe or tap</div>
           </>
-        ) : allNames.length === 0 ? (
-          <div style={{ textAlign:'center' }}>
-            <div style={{ fontSize:36, marginBottom:10 }}>🔤</div>
-            <div style={{ color:'#64748b', fontSize:16 }}>No {nameType} names for "{letter}"</div>
-          </div>
         ) : (
           <div style={{ textAlign:'center' }}>
-            <div style={{ fontSize:44, marginBottom:12 }}>✨</div>
-            <div style={{ color:'#94a3b8', fontSize:18, fontWeight:700 }}>All done for "{letter}"!</div>
+            <div style={{ fontSize:44, marginBottom:12 }}>{allNames.length === 0 ? '🔤' : '✨'}</div>
+            <div style={{ color:'#94a3b8', fontSize:18, fontWeight:700 }}>{allNames.length === 0 ? `No names for "${letter}"` : `All done for "${letter}"!`}</div>
             <div style={{ color:'#475569', fontSize:14, marginTop:6 }}>Pick a new letter or check matches</div>
           </div>
         )}
@@ -543,6 +579,7 @@ function SwipeApp({ roomCode, slot, myName, onLeave }) {
         </div>
       )}
 
+      <HeartBurst active={burst} onDone={() => setBurst(false)} />
       <Confetti active={confetti} />
       {matchModal && <MatchModal name={matchModal} lastName={room.lastName} onClose={() => setMatchModal(null)} />}
       {showMatches && <MatchesPanel matches={allMatches} lastName={room.lastName} onClose={() => setShowMatches(false)} />}
